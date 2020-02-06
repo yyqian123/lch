@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb  1 18:42:32 2020
+
+@author: yqian
+"""
+import cmutils.elf as elf
+#import cmutils.alib as alib
+import pandas as pd
+import numpy as np
+from datetime import datetime, date, timedelta
+from cmutils.alib import AlibPricer
+import calendar
+
+# Input imformation
+path_input = 'T:/Traders/YuyingQian/Projects/IMautomation/LCH/NOMURA.csv'
+path_output = 'T:/Traders/YuyingQian/Projects/IMautomation/LCH/NOMURA_sen.csv'
+currency = 'usd'
+'''
+file_path = elf.date_to_path('j:/elf/rates', test_date)
+        rates_db = elf.Elf(file_path)
+        pricer = alib.AlibPricer(test_date, rates_db)
+        pricer1 = alib.AlibPricer(test_date1, rates_db)
+
+
+'''
+
+#Set Date and Database
+tod =date.today()
+file_path = elf.date_to_path('j:/elf/rates', tod)
+rates_db = elf.Elf(file_path)
+o = AlibPricer(tod,rates_db)
+dt = o.busiday(tod, -1)
+Date=dt.strftime("%d%b%y")
+Database = f'j:/elf/reval/{Date}.elf'
+print(Database)
+reval_db = elf.Elf(Database)
+
+
+#Input All the trades information
+#df_txt = pd.read_csv('T:/Traders/YuyingQian/Projects/IMautomation/LCH/BNP.txt', delim_whitespace=True)
+df = pd.read_csv(path_input)
+lch_df = df.loc[df["LCH-Eligible"] == 'Yes']
+#Find the EffectiveCurrency of each trade
+'''
+def get_efcy(db,cy,td):
+    q = db.query_df(f'effectcurrency;trade={td}')
+    for a in q['EffectCurrency'].unique(): 
+        if a != cy:
+            return a
+
+
+lch_df['EffectCurrency'] = [""] * len(lch_df["Name"])
+for idx, row in lch_df.iterrows():
+    name = row['Name']
+    ecy = get_efcy(reval_db,currency,{name})
+    row['EffectCurrency'] = ecy
+print(lch_df)
+
+lch_df = lch_df.loc[lch_df["EffectCurrency"] == currency ]
+'''
+
+# Create delta dataframe
+trade_name = lch_df[['Name']]
+trade_name.reset_index(drop=True,inplace=True)
+#print(trade_name)
+tenors = ['1Day','1Week','1Month','2Month','5Year','6Year','7Year','8year','9Year','10Year','12Year','15Year','20Year','25Year','30Year','35Year']
+
+# 1month IMM
+def NextOneIMM(dt):
+    first_day_of_month = datetime(dt.year, dt.month, 1)
+    first_wednesday = first_day_of_month + timedelta(days=((2-calendar.monthrange(dt.year,dt.month)[0])+7)%7)
+    third_wednesday = first_wednesday + timedelta(days=14)
+    if dt < third_wednesday:
+        return third_wednesday
+    else:
+        return third_wednesday + timedelta(30)
+
+one_months = [""] * 4
+imm_one = NextOneIMM(datetime.now())
+for i in range(len(one_months)):
+    one_months[i]=imm_one.strftime("%b%y")
+    imm_one = imm_one + timedelta(30)
+    i=i+1
+#one_months = ['Feb20','Mar20','Apr20','May20']
+
+# 3month IMM
+three_months = [""] * 19
+imm = o.NextIMM(tod,currency)
+for i in range(len(three_months)):
+    imm = o.NextIMM(imm,currency)
+    three_months[i]=imm.strftime("%b%y")
+    i=i+1
+#three_months = ['Jun20','Sep20','Dec20','Mar21','Jun21','Sep21','Dec21','Mar22','Jun22','Sep22','Dec22','Mar23','Jun23','Sep23','Dec23','Mar24','Jun24','Sep24','Dec24']
+
+column_name = tenors + one_months + three_months + ['Total']
+
+delta_df = pd.concat([trade_name,pd.DataFrame(index=np.arange(len(trade_name["Name"])),columns=column_name)],axis=1)
+#print(delta_df)
+
+def fillin_delta_tenor(tenor):
+    for idx, row in delta_df.iterrows():
+        trade = row['Name']
+        delta = reval_db.total(f'delta;risk=tomorrow;curve=swap;effectcurrency={currency};point={tenor};trade={trade};')
+        row[tenor] = delta
+
+def fillin_delta_one_month(one_month):
+    for idx, row in delta_df.iterrows():
+        trade = row['Name']
+        delta = reval_db.total(f'delta;risk=tomorrow;curve=swap;effectcurrency={currency};point={one_month};reference=1MonthIMMFuture;trade={trade};')
+        row[one_month] = delta    
+
+def fillin_delta_three_month(three_month):
+    for idx, row in delta_df.iterrows():
+        trade = row['Name']
+        delta = reval_db.total(f'delta;risk=tomorrow;curve=swap;effectcurrency={currency};point={three_month};reference<>1MonthIMMFuture;trade={trade};')
+        row[three_month] = delta  
+        
+        
+if __name__=='__main__':
+    for tenor in tenors:
+        fillin_delta_tenor(tenor)
+
+    for one_month in one_months:
+        fillin_delta_one_month(one_month)
+        
+    for three_month in three_months:
+        fillin_delta_three_month(three_month)
+
+    for idx, row in delta_df.iterrows():
+        trade = row['Name']
+        delta = reval_db.total(f'delta;risk=tomorrow;curve=swap;trade={trade};')
+        row['Total'] = delta
+        
+    print(delta_df)
+    #print(delta_df["May20"])
+    
+    #f.sum(axis=0) 
+    #Transfer to LCH Formatting
+    delta_df["5Year"]=delta_df.apply(lambda row: 5*(row['Mar24']+row['Jun24']+row['Sep24']+row['Dec24']),axis=1)
+    delta_df["4Year"]=delta_df.apply(lambda row: 4*(row['Mar23']+row['Jun23']+row['Sep23']+row['Dec23']-row['Mar24']-row['Jun24']-row['Sep24']-row['Dec24']),axis=1)
+    delta_df["3Year"]=delta_df.apply(lambda row: 3*(row['Mar22']+row['Jun22']+row['Sep22']+row['Dec22']-row['Mar23']-row['Jun23']-row['Sep23']-row['Dec23']),axis=1)
+    delta_df["2Year"]=delta_df.apply(lambda row: 2*(row['Mar21']+row['Jun21']+row['Sep21']+row['Dec21']-row['Mar22']-row['Jun22']-row['Sep22']-row['Dec22']),axis=1)
+    delta_df["12Month"]=delta_df.apply(lambda row: row['Feb20']+row['Mar20']+row['Apr20']+row['May20']+row['Jun20']+row['Sep20']+row['Dec20']-row['Mar21']-row['Jun21']-row['Sep21']-row['Dec21'],axis=1)
+    
+    delta_format = delta_df[['1Day','1Week','1Month','2Month','12Month','2Year','3Year','4Year','5Year','6Year','7Year','8year','9Year','10Year','12Year','15Year','20Year','25Year','30Year','35Year']]
+    delta_format =delta_format.append(pd.Series(delta_format.sum(),name='Total'))
+    #print(delta_format)
+    sen = ["USD.LIBOR","IM.DELTA",""]
+    sen.extend(delta_format.iloc[-1].tolist())
+    print(sen)
+    sen_df = pd.DataFrame([sen],columns=['ccy.index.tenor/index2.tenor2','type','tenor','1D','1W','1M','2M','12M','2Y','3Y','4Y','5Y','6Y','7Y','8Y','9Y','10Y','12Y','15Y','20Y','25Y','30Y','35Y'])
+    #print(sen_df)
+    sen_df.to_csv(path_output,index = False)
